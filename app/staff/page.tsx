@@ -27,7 +27,7 @@ export default function StaffPage() {
   const allow = useMemo(() => {
     const email = (meEmail || '').toLowerCase()
     const whitelistedRole = ALLOWLIST[email]
-    return (me?.role === 'staff' || me?.role === 'owner' || Boolean(whitelistedRole))
+    return whitelistedRole || me?.role === 'staff' || me?.role === 'owner'
   }, [me, meEmail])
 
   useEffect(() => { init() }, [])
@@ -35,10 +35,11 @@ export default function StaffPage() {
   async function init() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { location.href = '/login'; return }
+
     const email = (user.email || '').toLowerCase()
     setMeEmail(email)
 
-    // If you/Tabitha are on the allowlist, make sure a profile exists and has that role.
+    // If email is allowlisted, make sure a profile exists (RLS allows self-insert/update)
     const allowRole = ALLOWLIST[email]
     if (allowRole) {
       await supabase.from('profiles').upsert({
@@ -46,10 +47,10 @@ export default function StaffPage() {
         role: allowRole,
         full_name: null,
         phone: null
-      }).eq('id', user.id)
+      })
     }
 
-    // Now read your profile
+    // Load your profile (may be null if it doesn't exist yet)
     const { data: p } = await supabase
       .from('profiles')
       .select('id, full_name, phone, role')
@@ -58,31 +59,29 @@ export default function StaffPage() {
 
     setMe((p as Profile | null) ?? null)
     setLoading(false)
-
-    // final guard (uses allowlist fallback)
-    if (!allowRole && (!p || (p.role !== 'staff' && p.role !== 'owner'))) {
-      alert('Staff only area')
-      location.href = '/dashboard'
-    }
   }
 
   async function runSearch() {
     const digits = query.replace(/\D/g, '')
     if (!digits) { setResults([]); setLoyaltyMap({}); return }
+
     const { data: profiles, error } = await supabase
       .from('profiles')
       .select('id, full_name, phone, role')
       .ilike('phone', `%${digits}%`)
       .limit(25)
     if (error) { alert(error.message); return }
+
     setResults((profiles ?? []) as Profile[])
 
     const ids = (profiles ?? []).map(p => p.id)
     if (!ids.length) { setLoyaltyMap({}); return }
+
     const { data: loy } = await supabase
       .from('loyalty')
       .select('user_id, stamps')
       .in('user_id', ids)
+
     const map: Record<string, number> = {}
     for (const row of (loy ?? []) as Loyalty[]) map[row.user_id] = row.stamps
     setLoyaltyMap(map)
@@ -137,56 +136,72 @@ export default function StaffPage() {
 
   if (loading) return <p>Loading…</p>
 
+  const emailShown = meEmail || 'unknown'
+  const roleShown = me?.role || (ALLOWLIST[(meEmail || '').toLowerCase()] ?? '—')
+
   return (
     <div className="space-y-4">
       <div className="card">
         <h2 className="font-display text-3xl">Staff Tools</h2>
         <p className="opacity-80">
-          Signed in as: {me?.full_name || meEmail || 'Unknown'} ({me?.role || (ALLOWLIST[(meEmail||'').toLowerCase()] || '—')})
+          Signed in as: {me?.full_name || emailShown} ({roleShown})
         </p>
-      </div>
-
-      <div className="card space-y-3">
-        <h3 className="font-semibold text-lg">Search by phone</h3>
-        <div className="flex gap-2">
-          <input
-            className="flex-1 rounded-2xl border px-4 py-2"
-            placeholder="Enter phone digits (e.g., 864...)"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-          />
-          <button className="btn" onClick={runSearch}>Search</button>
-        </div>
-
-        {!!results.length && (
-          <div className="mt-3 space-y-2">
-            {results.map(r => (
-              <div key={r.id} className="flex items-center justify-between rounded-xl border p-3">
-                <div>
-                  <div className="font-semibold">{r.full_name || '(no name)'} — {r.phone || '(no phone)'}</div>
-                  <div className="text-sm opacity-70">Stamps: {loyaltyMap[r.id] ?? 0}</div>
-                </div>
-                <div className="flex gap-2">
-                  <button className="btn" onClick={() => giveStamp(r, 1)}>Give 1 stamp</button>
-                </div>
-              </div>
-            ))}
+        <p className="text-xs opacity-60 mt-1">
+          Debug: email={emailShown} • profileRole={me?.role ?? 'null'}
+        </p>
+        {!allow && (
+          <div className="mt-3 rounded-xl border p-3 bg-yellow-50">
+            <p className="font-semibold">You’re not marked staff yet.</p>
+            <p className="text-sm">Ask us to add your email to the staff list, or set your profile role to staff.</p>
           </div>
         )}
       </div>
 
-      <div className="card space-y-3">
-        <h3 className="font-semibold text-lg">Redeem by code</h3>
-        <div className="flex gap-2">
-          <input
-            className="flex-1 rounded-2xl border px-4 py-2"
-            placeholder="Enter 6-digit code"
-            value={code}
-            onChange={e => setCode(e.target.value)}
-          />
-          <button className="btn" onClick={redeemByCode}>Redeem</button>
-        </div>
-      </div>
+      {allow && (
+        <>
+          <div className="card space-y-3">
+            <h3 className="font-semibold text-lg">Search by phone</h3>
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-2xl border px-4 py-2"
+                placeholder="Enter phone digits (e.g., 864...)"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+              />
+              <button className="btn" onClick={runSearch}>Search</button>
+            </div>
+
+            {!!results.length && (
+              <div className="mt-3 space-y-2">
+                {results.map(r => (
+                  <div key={r.id} className="flex items-center justify-between rounded-xl border p-3">
+                    <div>
+                      <div className="font-semibold">{r.full_name || '(no name)'} — {r.phone || '(no phone)'}</div>
+                      <div className="text-sm opacity-70">Stamps: {loyaltyMap[r.id] ?? 0}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button className="btn" onClick={() => giveStamp(r, 1)}>Give 1 stamp</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="card space-y-3">
+            <h3 className="font-semibold text-lg">Redeem by code</h3>
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-2xl border px-4 py-2"
+                placeholder="Enter 6-digit code"
+                value={code}
+                onChange={e => setCode(e.target.value)}
+              />
+              <button className="btn" onClick={redeemByCode}>Redeem</button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
-        }
+}
