@@ -6,8 +6,14 @@ import { supabase } from '@/lib/supabase-browser'
 type Profile = { id: string; full_name: string | null; phone: string | null; role: 'customer'|'staff'|'owner'|null }
 type Loyalty = { user_id: string; stamps: number }
 
+const ALLOWLIST: Record<string, 'staff'|'owner'> = {
+  'emperfxcion@gmail.com': 'staff',     // Letitia
+  'tabithabeach1990@gmail.com': 'staff' // Tabitha
+}
+
 export default function StaffPage() {
   const [me, setMe] = useState<Profile | null>(null)
+  const [meEmail, setMeEmail] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   // search state
@@ -17,26 +23,44 @@ export default function StaffPage() {
 
   // redeem state
   const [code, setCode] = useState('')
-  const allow = useMemo(() => me?.role === 'staff' || me?.role === 'owner', [me])
 
-  useEffect(() => {
-    init()
-  }, [])
+  const allow = useMemo(() => {
+    const email = (meEmail || '').toLowerCase()
+    const whitelistedRole = ALLOWLIST[email]
+    return (me?.role === 'staff' || me?.role === 'owner' || Boolean(whitelistedRole))
+  }, [me, meEmail])
+
+  useEffect(() => { init() }, [])
 
   async function init() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { location.href = '/login'; return }
+    const email = (user.email || '').toLowerCase()
+    setMeEmail(email)
 
+    // If you/Tabitha are on the allowlist, make sure a profile exists and has that role.
+    const allowRole = ALLOWLIST[email]
+    if (allowRole) {
+      await supabase.from('profiles').upsert({
+        id: user.id,
+        role: allowRole,
+        full_name: null,
+        phone: null
+      }).eq('id', user.id)
+    }
+
+    // Now read your profile
     const { data: p } = await supabase
       .from('profiles')
       .select('id, full_name, phone, role')
       .eq('id', user.id)
       .maybeSingle()
 
-    setMe(p as Profile | null)
+    setMe((p as Profile | null) ?? null)
     setLoading(false)
 
-    if (!p || (p.role !== 'staff' && p.role !== 'owner')) {
+    // final guard (uses allowlist fallback)
+    if (!allowRole && (!p || (p.role !== 'staff' && p.role !== 'owner'))) {
       alert('Staff only area')
       location.href = '/dashboard'
     }
@@ -45,40 +69,31 @@ export default function StaffPage() {
   async function runSearch() {
     const digits = query.replace(/\D/g, '')
     if (!digits) { setResults([]); setLoyaltyMap({}); return }
-
     const { data: profiles, error } = await supabase
       .from('profiles')
       .select('id, full_name, phone, role')
       .ilike('phone', `%${digits}%`)
       .limit(25)
-
     if (error) { alert(error.message); return }
-
     setResults((profiles ?? []) as Profile[])
 
     const ids = (profiles ?? []).map(p => p.id)
-    if (ids.length) {
-      const { data: loy } = await supabase
-        .from('loyalty')
-        .select('user_id, stamps')
-        .in('user_id', ids)
-
-      const map: Record<string, number> = {}
-      for (const row of (loy ?? []) as Loyalty[]) map[row.user_id] = row.stamps
-      setLoyaltyMap(map)
-    } else {
-      setLoyaltyMap({})
-    }
+    if (!ids.length) { setLoyaltyMap({}); return }
+    const { data: loy } = await supabase
+      .from('loyalty')
+      .select('user_id, stamps')
+      .in('user_id', ids)
+    const map: Record<string, number> = {}
+    for (const row of (loy ?? []) as Loyalty[]) map[row.user_id] = row.stamps
+    setLoyaltyMap(map)
   }
 
   async function giveStamp(target: Profile, delta = 1) {
     if (!allow) return
-    // increment stamps
     await supabase.from('loyalty')
       .update({ stamps: (loyaltyMap[target.id] ?? 0) + delta })
       .eq('user_id', target.id)
 
-    // audit trail
     const { data: { user } } = await supabase.auth.getUser()
     if (user) {
       await supabase.from('stamp_events').insert({
@@ -89,9 +104,9 @@ export default function StaffPage() {
       })
     }
 
-    // refresh this row
-    const { data: l } = await supabase.from('loyalty').select('user_id, stamps').eq('user_id', target.id).maybeSingle()
-    setLoyaltyMap(prev => ({ ...prev, [target.id]: (l?.stamps ?? (prev[target.id] ?? 0)) }))
+    const { data: l } = await supabase.from('loyalty')
+      .select('user_id, stamps').eq('user_id', target.id).maybeSingle()
+    setLoyaltyMap(prev => ({ ...prev, [target.id]: l?.stamps ?? (prev[target.id] ?? 0) }))
   }
 
   async function redeemByCode() {
@@ -99,47 +114,25 @@ export default function StaffPage() {
     const c = code.trim().toUpperCase()
     if (!c) return
 
-    // find the redemption
     const { data: red, error } = await supabase
       .from('redemptions')
       .select('id, user_id, status')
       .eq('code', c)
       .maybeSingle()
-
     if (error) { alert(error.message); return }
     if (!red) { alert('Code not found'); return }
     if (red.status !== 'issued') { alert('Code already used/invalid'); return }
 
-    // mark redeemed
-    await supabase
-      .from('redemptions')
+    await supabase.from('redemptions')
       .update({ status: 'redeemed', redeemed_at: new Date().toISOString() })
       .eq('id', red.id)
-
-    // clear stamps
     await supabase.from('loyalty').update({ stamps: 0 }).eq('user_id', red.user_id)
 
-    // log event: negative clear
-    const { data: l } = await supabase.from('loyalty').select('stamps').eq('user_id', red.user_id).maybeSingle()
-    const cleared = 0 // after update it’s zero
-    const { data: { user } } = await supabase.auth.getUser()
-    if (user) {
-      await supabase.from('stamp_events').insert({
-        user_id: red.user_id,
-        staff_id: user.id,
-        delta: -(cleared), // informational; zero after clear
-        note: 'redeemed free drink'
-      })
-    }
-
+    const { data: l2 } = await supabase.from('loyalty')
+      .select('user_id, stamps').eq('user_id', red.user_id).maybeSingle()
+    setLoyaltyMap(prev => ({ ...prev, [red.user_id]: l2?.stamps ?? 0 }))
     alert('Redeemed! Stamps cleared.')
     setCode('')
-    // refresh the result row if we have it on screen
-    const idx = results.findIndex(r => r.id === red.user_id)
-    if (idx >= 0) {
-      const { data: l2 } = await supabase.from('loyalty').select('user_id, stamps').eq('user_id', red.user_id).maybeSingle()
-      setLoyaltyMap(prev => ({ ...prev, [red.user_id]: l2?.stamps ?? 0 }))
-    }
   }
 
   if (loading) return <p>Loading…</p>
@@ -149,7 +142,7 @@ export default function StaffPage() {
       <div className="card">
         <h2 className="font-display text-3xl">Staff Tools</h2>
         <p className="opacity-80">
-          Signed in as: {me?.full_name || 'Unknown'} ({me?.role || '—'})
+          Signed in as: {me?.full_name || meEmail || 'Unknown'} ({me?.role || (ALLOWLIST[(meEmail||'').toLowerCase()] || '—')})
         </p>
       </div>
 
@@ -196,4 +189,4 @@ export default function StaffPage() {
       </div>
     </div>
   )
-}
+        }
