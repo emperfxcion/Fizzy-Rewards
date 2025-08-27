@@ -1,14 +1,19 @@
 'use client'
 
+// make sure Next.js does not pre-render/cache this page
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase-browser'
 
 type Profile = { id: string; full_name: string | null; phone: string | null; role: 'customer'|'staff'|'owner'|null }
 type Loyalty = { user_id: string; stamps: number }
 
+// allow-list fallback
 const ALLOWLIST: Record<string, 'staff'|'owner'> = {
-  'emperfxcion@gmail.com': 'staff',     // Letitia
-  'tabithabeach1990@gmail.com': 'staff' // Tabitha
+  'emperfxcion@gmail.com': 'staff',
+  'tabithabeach1990@gmail.com': 'staff'
 }
 
 export default function StaffPage() {
@@ -16,18 +21,15 @@ export default function StaffPage() {
   const [meEmail, setMeEmail] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // search state
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Profile[]>([])
   const [loyaltyMap, setLoyaltyMap] = useState<Record<string, number>>({})
-
-  // redeem state
   const [code, setCode] = useState('')
 
   const allow = useMemo(() => {
     const email = (meEmail || '').toLowerCase()
     const whitelistedRole = ALLOWLIST[email]
-    return whitelistedRole || me?.role === 'staff' || me?.role === 'owner'
+    return Boolean(whitelistedRole) || me?.role === 'staff' || me?.role === 'owner'
   }, [me, meEmail])
 
   useEffect(() => { init() }, [])
@@ -39,7 +41,7 @@ export default function StaffPage() {
     const email = (user.email || '').toLowerCase()
     setMeEmail(email)
 
-    // If email is allowlisted, make sure a profile exists (RLS allows self-insert/update)
+    // if on allowlist, ensure a profile exists and has that role (no alert, just fix)
     const allowRole = ALLOWLIST[email]
     if (allowRole) {
       await supabase.from('profiles').upsert({
@@ -48,9 +50,11 @@ export default function StaffPage() {
         full_name: null,
         phone: null
       })
+      // ensure a loyalty row too
+      await supabase.from('loyalty').upsert({ user_id: user.id, stamps: 0 }, { onConflict: 'user_id' })
     }
 
-    // Load your profile (may be null if it doesn't exist yet)
+    // load your profile (may be null if not created yet)
     const { data: p } = await supabase
       .from('profiles')
       .select('id, full_name, phone, role')
@@ -64,19 +68,16 @@ export default function StaffPage() {
   async function runSearch() {
     const digits = query.replace(/\D/g, '')
     if (!digits) { setResults([]); setLoyaltyMap({}); return }
-
     const { data: profiles, error } = await supabase
       .from('profiles')
       .select('id, full_name, phone, role')
       .ilike('phone', `%${digits}%`)
       .limit(25)
     if (error) { alert(error.message); return }
-
     setResults((profiles ?? []) as Profile[])
 
     const ids = (profiles ?? []).map(p => p.id)
     if (!ids.length) { setLoyaltyMap({}); return }
-
     const { data: loy } = await supabase
       .from('loyalty')
       .select('user_id, stamps')
@@ -152,7 +153,7 @@ export default function StaffPage() {
         {!allow && (
           <div className="mt-3 rounded-xl border p-3 bg-yellow-50">
             <p className="font-semibold">You’re not marked staff yet.</p>
-            <p className="text-sm">Ask us to add your email to the staff list, or set your profile role to staff.</p>
+            <p className="text-sm">If this is wrong, make sure you’re logged in as emperfxcion@gmail.com or set your profile role to staff.</p>
           </div>
         )}
       </div>
@@ -204,4 +205,4 @@ export default function StaffPage() {
       )}
     </div>
   )
-}
+        }
