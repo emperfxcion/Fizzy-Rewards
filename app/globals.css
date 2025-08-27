@@ -1,0 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;600;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --bg: #FFF4F8; --fg: #111111; }
+html, body { background: var(--bg); color: var(--fg); }
+
+.btn { @apply inline-flex items-center justify-center px-4 py-2 rounded-2xl font-semibold shadow-soft transition bg-brand-pink text-white hover:opacity-90; }
+.card { @apply rounded-2xl bg-white shadow-soft p-6; }
