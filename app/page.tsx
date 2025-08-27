@@ -13,9 +13,18 @@ export default function Home() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true); setMessage(null)
-    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + '/dashboard' } })
+
+    // Pass name + phone in the magic-link so they survive across devices
+    const redirect = `${location.origin}/dashboard?name=${encodeURIComponent(name)}&phone=${encodeURIComponent(phone)}`
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: redirect }
+    })
+
     if (error) setMessage(error.message)
     else setMessage('Check your email for the magic link!')
+
+    // also stash locally as a fallback
     localStorage.setItem('pendingName', name)
     localStorage.setItem('pendingPhone', phone)
     setLoading(false)
